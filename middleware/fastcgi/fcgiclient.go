@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"mime/multipart"
@@ -169,6 +170,40 @@ type FCGIClient struct {
 	reqID     uint16
 }
 
+type rwcWrapper struct {
+	delegate net.Conn
+
+	logBin *os.File
+	logStr *os.File
+}
+
+// Read implements the Conn Read method.
+func (w rwcWrapper) Read(b []byte) (int, error) {
+	res, err := w.delegate.Read(b)
+	fmt.Fprintf(w.logBin, "Read %v (%v, %v)\n\n", b, res, err)
+	fmt.Fprintf(w.logStr, "Read %v (%v, %v)\n", string(b), res, err)
+	return res, err
+}
+
+// Write implements the Conn Write method.
+func (w rwcWrapper) Write(b []byte) (int, error) {
+	res, err := w.delegate.Write(b)
+	fmt.Fprintf(w.logBin, "Write %v (%v, %v)\n\n", b, res, err)
+	fmt.Fprintf(w.logStr, "Write %v (%v, %v)\n", string(b), res, err)
+	return res, err
+}
+
+// Close closes the connection.
+func (w rwcWrapper) Close() error {
+	err := w.delegate.Close()
+	fmt.Fprintf(w.logBin, "Close %v\n\n", err)
+	fmt.Fprintf(w.logStr, "Close %v\n", err)
+
+	w.logBin.Close()
+	w.logStr.Close()
+	return err
+}
+
 // DialWithDialer connects to the fcgi responder at the specified network address, using custom net.Dialer.
 // See func net.Dial for a description of the network and address parameters.
 func DialWithDialer(network, address string, dialer net.Dialer) (fcgi *FCGIClient, err error) {
@@ -178,12 +213,25 @@ func DialWithDialer(network, address string, dialer net.Dialer) (fcgi *FCGIClien
 		return
 	}
 
+	tmp, err := ioutil.TempDir("", "fcgi")
+	if err != nil {
+		return nil, err
+	}
+	binlog, err := os.Create(filepath.Join(tmp, "bin.log"))
+	if err != nil {
+		return nil, err
+	}
+	strlog, err := os.Create(filepath.Join(tmp, "str.log"))
+	if err != nil {
+		return nil, err
+	}
+
 	fcgi = &FCGIClient{
-		rwc:       conn,
+		rwc:       rwcWrapper{conn, binlog, strlog},
 		keepAlive: false,
 		reqID:     1,
 	}
-
+	fmt.Printf("FASTCGI: Dumping to %v\n", tmp)
 	return
 }
 
